@@ -1,69 +1,145 @@
+import random
 import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import accuracy_score
-from deap import base, creator, tools, algorithms
 
-# Load dataset
-data = pd.read_csv('C:/Users/ASUS/Desktop/CMU/Train Multilayer Perceptron/wdbc.data.txt', header=None)
-X = data.iloc[:, 2:].values
-y = data.iloc[:, 1].values
+# Define the sigmoid activation function
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
 
-# Encode class labels
-le = LabelEncoder()
-y = le.fit_transform(y)
+# Define the derivative of the sigmoid function
+def sigmoid_derivative(x):
+    return x * (1 - x)
 
-# Standardize features
-sc = StandardScaler()
-X = sc.fit_transform(X)
+# Load the dataset
+def load_data(filename):
+    data = []
+    labels = []
+    with open(filename, 'r') as file:
+        for line in file:
+            if line.strip():
+                elements = line.split(',')
+                labels.append(1 if elements[1] == 'M' else 0)
+                data.append([float(e) for e in elements[2:]])
+    return np.array(data), np.array(labels)
 
-# Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+# Normalize the dataset
+def normalize(data):
+    for i in range(data.shape[1]):
+        data[:, i] = (data[:, i] - np.mean(data[:, i])) / np.std(data[:, i])
+    return data
 
-# Define the MLP model
-def create_mlp(hidden_layer_sizes):
-    return MLPClassifier(hidden_layer_sizes=hidden_layer_sizes, max_iter=1000, random_state=42)
+# Split data into training and validation sets
+def split_data(data, labels, validation_split):
+    indices = np.arange(data.shape[0])
+    np.random.shuffle(indices)
+    split_index = int(validation_split * data.shape[0])
+    train_indices = indices[split_index:]
+    val_indices = indices[:split_index]
+    return data[train_indices], labels[train_indices], data[val_indices], labels[val_indices]
 
-# Genetic Algorithm setup
-creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-creator.create("Individual", list, fitness=creator.FitnessMax)
+# Initialize the MLP with given structure
+def initialize_mlp(layer_sizes):
+    weights = []
+    biases = []
+    for i in range(len(layer_sizes) - 1):
+        weights.append(np.random.randn(layer_sizes[i], layer_sizes[i + 1]))
+        biases.append(np.random.randn(layer_sizes[i + 1]))
+    return weights, biases
 
-toolbox = base.Toolbox()
-toolbox.register("attr_int", np.random.randint, 5, 100)
-toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=2)
-toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+# Feedforward
+def feedforward(weights, biases, input_data):
+    activations = [input_data]
+    for w, b in zip(weights, biases):
+        input_data = sigmoid(np.dot(input_data, w) + b)
+        activations.append(input_data)
+    return activations
 
-def eval_mlp(individual):
-    hidden_layer_sizes = tuple(individual)
-    mlp = create_mlp(hidden_layer_sizes)
-    scores = cross_val_score(mlp, X_train, y_train, cv=10)
-    return scores.mean(),
+# Backpropagation
+def backpropagate(weights, biases, activations, expected_output):
+    weight_gradients = [np.zeros_like(w) for w in weights]
+    bias_gradients = [np.zeros_like(b) for b in biases]
+    error = activations[-1] - expected_output
+    deltas = [error * sigmoid_derivative(activations[-1])]
+    for i in range(len(weights) - 2, -1, -1):
+        error = deltas[-1].dot(weights[i + 1].T)
+        deltas.append(error * sigmoid_derivative(activations[i + 1]))
+    deltas.reverse()
+    for i in range(len(weights)):
+        weight_gradients[i] = activations[i].T.dot(deltas[i])
+        bias_gradients[i] = np.sum(deltas[i], axis=0)
+    return weight_gradients, bias_gradients
 
-toolbox.register("evaluate", eval_mlp)
-toolbox.register("mate", tools.cxTwoPoint)
-toolbox.register("mutate", tools.mutUniformInt, low=5, up=100, indpb=0.2)
-toolbox.register("select", tools.selTournament, tournsize=3)
+# Genetic Algorithm
+def genetic_algorithm(data, labels, population_size, generations, mutation_rate, layer_sizes):
+    population = [initialize_mlp(layer_sizes) for _ in range(population_size)]
+    for generation in range(generations):
+        fitness_scores = [evaluate_individual(data, labels, individual) for individual in population]
+        next_population = []
+        for _ in range(population_size // 2):
+            parent1, parent2 = select_parents(population, fitness_scores)
+            child1, child2 = crossover(parent1, parent2)
+            mutate(child1, mutation_rate)
+            mutate(child2, mutation_rate)
+            next_population.extend([child1, child2])
+        population = next_population
+    best_individual = max(zip(population, fitness_scores), key=lambda x: x[1])[0]
+    return best_individual
 
-# Genetic Algorithm parameters
-population = toolbox.population(n=50)
-ngen = 40
-cxpb = 0.5
-mutpb = 0.2
+# Evaluate an individual
+def evaluate_individual(data, labels, individual):
+    weights, biases = individual
+    predictions = feedforward(weights, biases, data)[-1]
+    accuracy = np.mean(np.round(predictions) == labels)
+    return accuracy
 
-# Run Genetic Algorithm
-algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=None, halloffame=None, verbose=True)
+# Select parents based on fitness
+def select_parents(population, fitness_scores):
+    total_fitness = sum(fitness_scores)
+    parent1 = roulette_wheel_selection(population, fitness_scores, total_fitness)
+    parent2 = roulette_wheel_selection(population, fitness_scores, total_fitness)
+    return parent1, parent2
 
-# Get the best individual
-best_individual = tools.selBest(population, k=1)[0]
-best_hidden_layer_sizes = tuple(best_individual)
+# Roulette wheel selection
+def roulette_wheel_selection(population, fitness_scores, total_fitness):
+    selection_point = random.uniform(0, total_fitness)
+    running_sum = 0
+    for individual, fitness in zip(population, fitness_scores):
+        running_sum += fitness
+        if running_sum >= selection_point:
+            return individual
 
-# Train final model with the best hidden layer sizes
-final_mlp = create_mlp(best_hidden_layer_sizes)
-final_mlp.fit(X_train, y_train)
+# Crossover operation
+def crossover(parent1, parent2):
+    weights1, biases1 = parent1
+    weights2, biases2 = parent2
+    child1_weights, child2_weights = [], []
+    child1_biases, child2_biases = [], []
+    for w1, w2 in zip(weights1, weights2):
+        point = random.randint(0, w1.shape[1] - 1)
+        child1_weights.append(np.hstack((w1[:, :point], w2[:, point:])))
+        child2_weights.append(np.hstack((w2[:, :point], w1[:, point:])))
+    for b1, b2 in zip(biases1, biases2):
+        point = random.randint(0, len(b1) - 1)
+        child1_biases.append(np.hstack((b1[:point], b2[point:])))
+        child2_biases.append(np.hstack((b2[:point], b1[point:])))
+    return (child1_weights, child1_biases), (child2_weights, child2_biases)
 
-# Evaluate the model
-y_pred = final_mlp.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print(f'Accuracy: {accuracy:.2f}')
+# Mutation operation
+def mutate(individual, mutation_rate):
+    weights, biases = individual
+    for i in range(len(weights)):
+        if random.random() < mutation_rate:
+            weights[i] += np.random.randn(*weights[i].shape) * mutation_rate
+            biases[i] += np.random.randn(*biases[i].shape) * mutation_rate
+
+# Main function
+def main():
+    data, labels = load_data('C:/Users/ASUS/Desktop/CMU/Train Multilayer Perceptron/wdbc.data.txt')
+    data = normalize(data)
+    train_data, train_labels, val_data, val_labels = split_data(data, labels, validation_split=0.1)
+    layer_sizes = [30, 10, 1]  # Example layer structure, change as needed
+    best_individual = genetic_algorithm(train_data, train_labels, population_size=20, generations=100, mutation_rate=0.01, layer_sizes=layer_sizes)
+    val_accuracy = evaluate_individual(val_data, val_labels, best_individual)
+    print(f'Validation Accuracy: {val_accuracy:.2f}')
+
+if __name__ == '__main__':
+    main()
