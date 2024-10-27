@@ -1,155 +1,106 @@
 import random
-import numpy as np
+import math
 import matplotlib.pyplot as plt
 
-# Define the sigmoid activation function
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
+# ฟังก์ชั่นสำหรับโหลดข้อมูล
+def load_data(file_name):
+    with open(file_name, 'r') as file:
+        data = file.readlines()
+    dataset = []
+    for line in data:
+        line = line.strip().split(',')
+        id_num = int(line[0])
+        diagnosis = 1 if line[1] == 'M' else 0
+        features = list(map(float, line[2:]))
+        dataset.append((features, diagnosis))
+    return dataset
 
-# Define the derivative of the sigmoid function
-def sigmoid_derivative(x):
-    return x * (1 - x)
+# ฟังก์ชั่นสำหรับแบ่งข้อมูล
+def split_data(data, test_size=0.1):
+    random.shuffle(data)
+    test_len = int(len(data) * test_size)
+    return data[test_len:], data[:test_len]
 
-# Load the dataset
-def load_data(filename):
-    data = []
-    labels = []
-    with open(filename, 'r') as file:
-        for line in file:
-            if line.strip():
-                elements = line.split(',')
-                labels.append(1 if elements[1] == 'M' else 0)
-                data.append([float(e) for e in elements[2:]])
-    return np.array(data), np.array(labels)
+# นิยามโครงสร้างของ Multilayer Perceptron
+class MLP:
+    def __init__(self, input_size, hidden_layers, output_size):
+        self.layers = []
+        previous_size = input_size
+        for size in hidden_layers:
+            self.layers.append([[random.uniform(-1, 1) for _ in range(previous_size + 1)] for _ in range(size)])
+            previous_size = size
+        self.layers.append([[random.uniform(-1, 1) for _ in range(previous_size + 1)] for _ in range(output_size)])
 
-# Normalize the dataset
-def normalize(data):
-    for i in range(data.shape[1]):
-        data[:, i] = (data[:, i] - np.mean(data[:, i])) / np.std(data[:, i])
-    return data
+    def forward(self, inputs):
+        for layer in self.layers:
+            new_inputs = []
+            for neuron in layer:
+                activation = neuron[-1] + sum(w * i for w, i in zip(neuron[:-1], inputs))
+                activation = max(min(activation, 100), -100)  # Clip activation to avoid overflow
+                new_inputs.append(1.0 / (1.0 + math.exp(-activation)))  # Sigmoid activation
+            inputs = new_inputs
+        return inputs
 
-# Split data into training and validation sets
-def split_data(data, labels, validation_split):
-    indices = np.arange(data.shape[0])
-    np.random.shuffle(indices)
-    split_index = int(validation_split * data.shape[0])
-    train_indices = indices[split_index:]
-    val_indices = indices[:split_index]
-    return data[train_indices], labels[train_indices], data[val_indices], labels[val_indices]
+    def predict(self, inputs):
+        return self.forward(inputs)
 
-# Initialize the MLP with given structure
-def initialize_mlp(layer_sizes):
-    weights = []
-    biases = []
-    for i in range(len(layer_sizes) - 1):
-        weights.append(np.random.randn(layer_sizes[i], layer_sizes[i + 1]))
-        biases.append(np.random.randn(layer_sizes[i + 1]))
-    return weights, biases
+# ฟังก์ชั่นสำหรับ Genetic Algorithm
+def genetic_algorithm(pop_size, generations, mlp, data, test_data):
+    population = [MLP(input_size=len(data[0][0]), hidden_layers=[5], output_size=1) for _ in range(pop_size)]
+    accuracy_history = []
 
-# Feedforward
-def feedforward(weights, biases, input_data):
-    activations = [input_data]
-    for w, b in zip(weights, biases):
-        input_data = sigmoid(np.dot(input_data, w) + b)
-        activations.append(input_data)
-    return activations
-
-# Backpropagation
-def backpropagate(weights, biases, activations, expected_output):
-    weight_gradients = [np.zeros_like(w) for w in weights]
-    bias_gradients = [np.zeros_like(b) for b in biases]
-    error = activations[-1] - expected_output
-    deltas = [error * sigmoid_derivative(activations[-1])]
-    for i in range(len(weights) - 2, -1, -1):
-        error = deltas[-1].dot(weights[i + 1].T)
-        deltas.append(error * sigmoid_derivative(activations[i + 1]))
-    deltas.reverse()
-    for i in range(len(weights)):
-        weight_gradients[i] = activations[i].T.dot(deltas[i])
-        bias_gradients[i] = np.sum(deltas[i], axis=0)
-    return weight_gradients, bias_gradients
-
-# Genetic Algorithm
-def genetic_algorithm(data, labels, population_size, generations, mutation_rate, layer_sizes):
-    population = [initialize_mlp(layer_sizes) for _ in range(population_size)]
-    best_fitness_scores = []
     for generation in range(generations):
-        fitness_scores = [evaluate_individual(data, labels, individual) for individual in population]
-        best_fitness_scores.append(max(fitness_scores))
-        next_population = []
-        for _ in range(population_size // 2):
-            parent1, parent2 = select_parents(population, fitness_scores)
-            child1, child2 = crossover(parent1, parent2)
-            mutate(child1, mutation_rate)
-            mutate(child2, mutation_rate)
-            next_population.extend([child1, child2])
-        population = next_population
-    best_individual = max(zip(population, fitness_scores), key=lambda x: x[1])[0]
-    return best_individual, best_fitness_scores
+        # ประเมินค่าความเหมาะสม
+        fitness_scores = []
+        for individual in population:
+            correct = 0
+            for features, label in test_data:
+                prediction = individual.predict(features)[0]
+                correct += int((prediction > 0.5) == label)
+            fitness_scores.append(correct / len(test_data))
 
-# Evaluate an individual
-def evaluate_individual(data, labels, individual):
-    weights, biases = individual
-    predictions = feedforward(weights, biases, data)[-1]
-    accuracy = np.mean(np.round(predictions) == labels)
-    return accuracy
+        accuracy = sum(fitness_scores) / len(fitness_scores)
+        accuracy_history.append(accuracy)
 
-# Select parents based on fitness
-def select_parents(population, fitness_scores):
-    total_fitness = sum(fitness_scores)
-    parent1 = roulette_wheel_selection(population, fitness_scores, total_fitness)
-    parent2 = roulette_wheel_selection(population, fitness_scores, total_fitness)
-    return parent1, parent2
+        # เลือกพันธุ์
+        mating_pool = []
+        avg_score = sum(fitness_scores) / len(fitness_scores)
+        for individual, score in zip(population, fitness_scores):
+            if score > avg_score:
+                mating_pool.append(individual)
+        
+        # ถ้าแม่พันธุ์ไม่พอให้ทำการเพิ่มเข้าไปในพูล
+        if len(mating_pool) < 2:
+            mating_pool = population
 
-# Roulette wheel selection
-def roulette_wheel_selection(population, fitness_scores, total_fitness):
-    selection_point = random.uniform(0, total_fitness)
-    running_sum = 0
-    for individual, fitness in zip(population, fitness_scores):
-        running_sum += fitness
-        if running_sum >= selection_point:
-            return individual
+        # ผสมพันธุ์และกลายพันธุ์
+        next_generation = []
+        while len(next_generation) < pop_size:
+            parent1, parent2 = random.sample(mating_pool, 2)
+            child = MLP(input_size=len(data[0][0]), hidden_layers=[5], output_size=1)
+            for l in range(len(parent1.layers)):
+                for n in range(len(parent1.layers[l])):
+                    if random.random() < 0.5:
+                        child.layers[l][n] = parent1.layers[l][n]
+                    else:
+                        child.layers[l][n] = parent2.layers[l][n]
+            next_generation.append(child)
+        population = next_generation
 
-# Crossover operation
-def crossover(parent1, parent2):
-    weights1, biases1 = parent1
-    weights2, biases2 = parent2
-    child1_weights, child2_weights = [], []
-    child1_biases, child2_biases = [], []
-    for w1, w2 in zip(weights1, weights2):
-        point = random.randint(0, w1.shape[1] - 1)
-        child1_weights.append(np.hstack((w1[:, :point], w2[:, point:])))
-        child2_weights.append(np.hstack((w2[:, :point], w1[:, point:])))
-    for b1, b2 in zip(biases1, biases2):
-        point = random.randint(0, len(b1) - 1)
-        child1_biases.append(np.hstack((b1[:point], b2[point:])))
-        child2_biases.append(np.hstack((b2[:point], b1[point:])))
-    return (child1_weights, child1_biases), (child2_weights, child2_biases)
+    best_individual = max(population, key=lambda ind: sum(int((ind.predict(f)[0] > 0.5) == l) for f, l in test_data) / len(test_data))
+    return best_individual, accuracy_history
 
-# Mutation operation
-def mutate(individual, mutation_rate):
-    weights, biases = individual
-    for i in range(len(weights)):
-        if random.random() < mutation_rate:
-            weights[i] += np.random.randn(*weights[i].shape) * mutation_rate
-            biases[i] += np.random.randn(*biases[i].shape) * mutation_rate
+# ทดสอบโปรแกรม
+data = load_data('wdbc.data.txt')
+train_data, test_data = split_data(data)
+mlp = MLP(input_size=30, hidden_layers=[5], output_size=1)
+trained_mlp, accuracy_history = genetic_algorithm(pop_size=20, generations=100, mlp=mlp, data=train_data, test_data=test_data)
 
-# Main function
-def main():
-    data, labels = load_data('C:/Users/ASUS/Desktop/CMU/Train Multilayer Perceptron/wdbc.data.txt')
-    data = normalize(data)
-    train_data, train_labels, val_data, val_labels = split_data(data, labels, validation_split=0.1)
-    layer_sizes = [30, 10, 1]  # Example layer structure, change as needed
-    best_individual, best_fitness_scores = genetic_algorithm(train_data, train_labels, population_size=20, generations=100, mutation_rate=0.01, layer_sizes=layer_sizes)
-    val_accuracy = evaluate_individual(val_data, val_labels, best_individual)
-    print(f'Validation Accuracy: {val_accuracy:.2f}')
-    
-    # Plot the fitness scores over generations
-    plt.plot(best_fitness_scores)
-    plt.xlabel('Generation')
-    plt.ylabel('Best Fitness Score')
-    plt.title('Best Fitness Score over Generations')
-    plt.show()
+# แสดงกราฟผลลัพธ์
+plt.plot(accuracy_history)
+plt.xlabel('Generations')
+plt.ylabel('Accuracy')
+plt.title('Genetic Algorithm Training Accuracy')
+plt.show()
 
-if __name__ == '__main__':
-    main()
+print("Train complete.")
