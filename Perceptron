@@ -103,4 +103,4 @@ plt.ylabel('Accuracy')
 plt.title('Genetic Algorithm Training Accuracy')
 plt.show()
 
-print("Train complete.")
+
